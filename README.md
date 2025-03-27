@@ -1,4 +1,8 @@
-```
+![image](https://github.com/user-attachments/assets/ba38835c-210a-45dd-9410-5536c0d7996c)
+
+
+```    
+
  class Gondola : public Geometry<vec2> {
 public:
    enum State { waiting, started, fallen };
@@ -133,3 +137,5 @@ public:
                   sinA * point.x + cosA * point.y);
    }
 };
+``` 
+
