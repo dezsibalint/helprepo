@@ -1,82 +1,135 @@
-    void Animate(float dt) {
-            if (state != started || spline.cps.size() < 2) return;
-    
-            // Apply gravity
-            vec2 gravity = vec2(0, -g); // Assuming +y is upwards
-    
-            // Predict the next position based on current velocity and gravity
-            vec2 nextPosition = position + velocity * dt + 0.5f * gravity * dt * dt;
-            vec2 prevVelocity = velocity;
-            velocity += gravity * dt;
-    
-            // Find the closest point on the spline to the predicted position
-            float closestT = FindClosestT(nextPosition); // Implement this accurately
-    
-            vec3 splinePoint3D = spline.r(closestT);
-            vec2 closestPointOnSpline = vec2(splinePoint3D.x, splinePoint3D.y);
-    
-            // Calculate the tangent of the spline at the closest point
-            float epsilon = 0.001f;
-            vec3 tangent3D = normalize(spline.r(closestT + epsilon) - spline.r(closestT - epsilon));
-            vec2 tangent = normalize(vec2(tangent3D.x, tangent3D.y));
-            vec2 normal = vec2(-tangent.y, tangent.x);
-    
-            // Vector from the closest spline point to the predicted position
-            vec2 displacementFromTrack = nextPosition - closestPointOnSpline;
-            float distanceToTrack = glm::length(displacementFromTrack);
-            float trackProximityThreshold = 0.1f;
-    
-            float tangentialVelocity = 0.0f; // Declare and initialize here
-    
-            if (distanceToTrack > trackProximityThreshold) {
-                // Gondola is moving away from the track (or has lost contact)
-                position = nextPosition;
-                if (distanceToTrack > 0.5f) {
-                    state = fallen;
-                    printf("Fallen!\n");
-                }
-            } else {
-                // Gondola is close to the track, constrain motion
-    
-                // Project gravity onto the tangent to get tangential acceleration
-                float tangentialGravity = glm::dot(gravity, tangent);
-                velocity += tangentialGravity * dt;
-    
-                position = closestPointOnSpline;
-    
-                // Calculate tangential velocity after the update
-                tangentialVelocity = glm::dot(velocity, tangent);
-    
-                // Check for "flight" (normal force direction)
-                float normalForce = glm::dot(gravity, normal);
-                if (normalForce > 0) { // Normal force pointing away from the track
-                    state = fallen;
-                    printf("Lost contact (normal force positive)!\n");
-                }
-            }
-    
-            // Update rotation based on the tangential velocity
-            phi -= tangentialVelocity * dt / radius;
-        }
-    
-    
-        // Helper function to find the spline parameter 't' closest to a given point
-        float FindClosestT(vec2 point, int numIterations = 50) {
-            if (spline.cps.size() < 2) return 0.0f;
-            float startT = spline.ts.front();
-            float endT = spline.ts.back();
-            float bestT = startT;
-            float minDistSq = std::numeric_limits<float>::max();
-    
-            for (int i = 0; i < numIterations; ++i) {
-               float t = startT + (endT - startT) * static_cast<float>(i) / (numIterations - 1);
-               vec3 splinePoint3D = spline.r(t);
-               vec2 splinePoint = vec2(splinePoint3D.x, splinePoint3D.y);
-               float distSq = glm::distance(point, splinePoint);
-               if (distSq < minDistSq) {
-                  minDistSq = distSq;
-                  bestT = t;
-               }
-            }
-            return bestT;
-        }
+```
+ class Gondola : public Geometry<vec2> {
+public:
+   enum State { waiting, started, fallen };
+   State state = waiting;
+   CatmullRom spline;
+   Geometry<vec2>* track;
+   vec2 position;
+   vec2 velocity;
+   float phi = 0;  // Rotation angle
+   float radius = 0.1f;  // Wheel radius
+   float mass = 1.0f;  // Gondola mass
+   float g = 40.0f;  // Gravity
+
+   Gondola(Geometry<vec2>* track) : track(track) {
+      if (!track->Vtx().empty()) {
+         for (vec2 pt : track->Vtx()) {
+            spline.AddControlPoint(pt);
+         }
+         if (!spline.cps.empty()) {
+            position = vec2(spline.cps.front().x, spline.cps.front().y);
+         }
+      } else {
+         std::cerr << "Error: Track has no points!" << std::endl;
+      }
+   }
+
+   void Start() {
+      if (state == waiting) {
+         printf("Started\n");
+         position =  spline.r(0.01f);
+         velocity = vec2(0, 0);
+         phi = 0;
+         state = started;
+      }
+   }
+
+   void Animate(float dt) {
+      if (state == waiting || spline.cps.size() < 2) return;
+      const float lambda = 0.5f;
+
+      vec2 gravity = vec2(0, -g);
+      static float t = 0.001f;
+      static bool initialized = false;
+
+      if (!initialized) {
+         float y0 = spline.r(0).y;
+         float y_tau = spline.r(0.001f).y;
+         velocity.x = sqrt(2.0f * g * (y0 - y_tau) / (1.0f + lambda));
+         initialized = true;
+      }
+
+      t += velocity.x * dt;
+
+
+      vec2 splinePoint2D = spline.r(t);
+      vec2 nextPosition = vec2(splinePoint2D.x+radius, splinePoint2D.y);
+
+      float epsilon = 0.001f;
+      vec2 tangent = (vec2)normalize(vec2(spline.r(t + epsilon)) - vec2(spline.r(t - epsilon)));
+
+      float tangentialGravity = glm::dot(gravity, tangent);
+      if (tangentialGravity < 0&&glm::length(velocity)<0.1f) { // If gravity is pulling in the direction of the tangent
+         printf("Switching to free fall!\n");
+         // Switch to free fall simulation
+         velocity += gravity * dt;  // Simply apply gravity in the free fall mode
+         position+=velocity*dt;
+         state=fallen;
+         return;
+      }
+
+      if (state!=fallen) {
+         velocity += tangentialGravity * dt;
+         position = nextPosition;
+
+         float tangentialVelocity = glm::dot(velocity, tangent);
+         float rotationSpeed = tangentialVelocity / radius*0.005f;
+         phi -= rotationSpeed * dt;
+      }
+      if (state == fallen) {
+         // Continuously apply gravity in free fall mode
+         velocity += gravity * dt; // Gravity is always applied in free fall
+         position += velocity * dt; // Update position based on velocity
+      }
+
+
+   }
+
+
+
+
+
+   void Draw(GPUProgram* gpuProgram) {
+      gpuProgram->Use();
+      if (state == waiting) return;
+
+      vector<vec2> circleVertices;
+      int numSegments = 360;
+      circleVertices.push_back(position);
+
+      for (int i = 1; i <= numSegments; i++) {
+         float angle = 2.0f * M_PI * i / numSegments;
+         circleVertices.push_back(position + radius * vec2(cos(angle), sin(angle)));
+      }
+
+      this->Vtx() = circleVertices;
+      this->updateGPU();
+      Geometry<vec2>::Draw(gpuProgram, GL_TRIANGLE_FAN, vec3(0, 0, 1));
+
+      Geometry<vec2>::Draw(gpuProgram, GL_LINE_LOOP, vec3(1, 1, 1));
+
+      this->Vtx().clear();
+
+      vec2 xAxisLeft  = position + rotate(vec2(-radius, 0), -phi);
+      vec2 xAxisRight = position + rotate(vec2(radius, 0), -phi);
+      vec2 yAxisBottom = position + rotate(vec2(0, -radius), -phi);
+      vec2 yAxisTop = position + rotate(vec2(0, radius), -phi);
+
+
+      this->Vtx().push_back(xAxisLeft);
+      this->Vtx().push_back(xAxisRight);
+      this->Vtx().push_back(yAxisBottom);
+      this->Vtx().push_back(yAxisTop);
+
+      this->updateGPU();
+      Geometry<vec2>::Draw(gpuProgram, GL_LINES, vec3(1, 1, 1));
+   }
+
+   vec2 rotate(vec2 point, float angle) {
+      float cosA = cos(angle);
+      float sinA = sin(angle);
+      return vec2(cosA * point.x - sinA * point.y,
+                  sinA * point.x + cosA * point.y);
+   }
+};
